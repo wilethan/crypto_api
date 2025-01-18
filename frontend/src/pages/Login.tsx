@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import API from "../services/api"; // Service pour appeler l'API backend
 import { useAuth } from "../hooks/useAuth"; // Hook personnalisé pour gérer l'état d'authentification
-import { Navigate } from "react-router-dom";
+import { Navigate, Link } from "react-router-dom"; // Import de Link pour la navigation
 
 const Login = () => {
     const { user, login } = useAuth(); // Récupération de l'utilisateur connecté et de la fonction login
@@ -79,6 +79,13 @@ const Login = () => {
             >
                 Se connecter
             </button>
+
+            {/* Lien "Mot de passe oublié" */}
+            <div className="text-center mt-4">
+                <Link to="/forgot-password" className="text-blue-500 hover:text-blue-700">
+                    Mot de passe oublié ?
+                </Link>
+            </div>
         </form>
     );
 };

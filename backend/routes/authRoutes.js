@@ -5,6 +5,7 @@ const bcrypt = require("bcrypt"); // Import du module bcrypt qui permet de hache
 const jwt = require("jsonwebtoken"); // Import du module jsonwebtoken   qui permet de générer des tokens JWT
 const Joi = require("joi"); // Import du module Joi qui permet de valider les données entrantes dans les requêtes HTTP
 const { sendEmail } = require("../utils/emailService");
+const crypto = require("crypto"); // Import de 'crypto'
 
 if (process.env.JWT_REFRESH_SECRET === undefined)
   throw new Error("JWT_REFRESH_SECRET is not defined"); //
@@ -193,8 +194,9 @@ router.post("/refresh", async (req, res) => {
     }
 
     // Vérifier si le token existe dans la base de données
+    //TODO: Search token by hashedRefreshToken and not by userid in case of multiple refreshtoken for multisession
     const tokenResult = await pool.query(
-      "SELECT * FROM refresh_token WHERE user_id = $1",
+      "SELECT * FROM refresh_token WHERE token = $1",
       [decoded.id]
     );
     const storedToken = tokenResult.rows[0];
@@ -269,6 +271,7 @@ router.post("/logout", async (req, res) => {
     }
 
     // Supprimer le refreshToken de la base de données
+    //TODO: search by hashed refresh token
     await pool.query("DELETE FROM refresh_token WHERE token = $1", [
       refreshToken,
     ]);
@@ -284,6 +287,103 @@ router.post("/logout", async (req, res) => {
   } catch (err) {
     console.error("Erreur lors de la déconnexion :", err.message);
     res.status(500).json({ error: "Erreur interne du serveur." });
+  }
+});
+
+// Route pour envoyer l'email de réinitialisation du mot de passe
+router.post("/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    // Vérifier si l'utilisateur existe dans la base de données
+    const userResult = await pool.query(
+      "SELECT * FROM users WHERE email = $1",
+      [email]
+    );
+    const user = userResult.rows[0];
+
+    if (!user) {
+      return res
+        .status(400)
+        .json({ message: "Aucun utilisateur trouvé avec cet email." });
+    }
+
+    // Générer un token unique pour la réinitialisation du mot de passe
+    const resetToken = crypto.randomBytes(20).toString("hex");
+
+    // Sauvegarder le token et sa date d'expiration dans la base de données
+    let resetTokenExpiration = new Date(Date.now() + 1800000); // 30 minutes (en millisecondes)
+
+    // Limiter la date d'expiration à la plage valide de PostgreSQL
+    const maxValidDate = new Date(294276, 11, 31); // Dernière date valide de PostgreSQL (31 décembre 294276)
+    if (resetTokenExpiration > maxValidDate) {
+      resetTokenExpiration = maxValidDate;
+    }
+
+    // Convertir l'expiration en timestamp de type seconds
+    const resetTokenExpirationInSeconds = Math.floor(
+      resetTokenExpiration.getTime() / 1000
+    );
+
+    // Sauvegarder le token et la date d'expiration dans la base de données
+    await pool.query(
+      "UPDATE users SET reset_password_token = $1, reset_password_expires = to_timestamp($2) WHERE email = $3",
+      [resetToken, resetTokenExpirationInSeconds, email]
+    );
+
+    // Créer un lien de réinitialisation
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+
+    // Envoyer l'email avec le lien de réinitialisation
+    await sendEmail(
+      email,
+      "Réinitialisation de votre mot de passe",
+      `<p>Vous avez demandé une réinitialisation de mot de passe. Cliquez sur le lien suivant pour réinitialiser votre mot de passe :</p><a href="${resetLink}">${resetLink}</a>`,
+      `<p>Vous avez demandé une réinitialisation de mot de passe. Cliquez sur le lien suivant pour réinitialiser votre mot de passe : <a href="${resetLink}">${resetLink}</a></p>`
+    );
+
+    res.status(200).json({
+      message: "Si cet email existe, un lien de réinitialisation a été envoyé.",
+    });
+  } catch (error) {
+    console.error("Erreur lors de l'envoi de l'email :", error.message);
+    res.status(500).json({ message: "Erreur serveur." });
+  }
+});
+
+// Route pour réinitialiser le mot de passe
+router.post("/reset-password/:token", async (req, res) => {
+  const { token } = req.params;
+  const { password } = req.body;
+
+  try {
+    // Vérifier si le token est valide et non expiré
+    const userResult = await pool.query(
+      "SELECT * FROM users WHERE reset_password_token = $1 AND reset_password_expires > $2",
+      [token, Math.floor(Date.now() / 1000)] // Vérification du timestamp actuel en secondes
+    );
+    const user = userResult.rows[0];
+
+    if (!user) {
+      return res.status(400).json({ message: "Token invalide ou expiré." });
+    }
+
+    // Hacher le nouveau mot de passe
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Mettre à jour le mot de passe de l'utilisateur
+    await pool.query(
+      "UPDATE users SET pswd = $1, reset_password_token = NULL, reset_password_expires = NULL WHERE id = $2",
+      [hashedPassword, user.id]
+    );
+
+    res.status(200).json({ message: "Votre mot de passe a été réinitialisé." });
+  } catch (error) {
+    console.error(
+      "Erreur lors de la réinitialisation du mot de passe :",
+      error.message
+    );
+    res.status(500).json({ message: "Erreur serveur." });
   }
 });
 
